@@ -355,96 +355,22 @@ async def promote_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Error: Bot ko group mein 'Add Admins' permission chahiye.")
 
-# ======================= QR GENERATOR HELPER =======================
-async def generate_qr_flow(update: Update, context: ContextTypes.DEFAULT_TYPE, amount: int, plan_name: str):
-    """Helper function to send QR or Fallback Button based on amount and plan name"""
-    
-    caption_text = (
-        f"📦 **Plan Selected:** {plan_name}\n"
-        f"💰 **Amount:** ₹{amount}\n"
-        f"⏳ **Validity:** 30 Days Premium\n\n"
-        f"👇 Pay karke Screenshot bhejo!"
+# ======================= QR CODE GENERATOR =======================
+def generate_qr_image(amount):
+    """Generates QR image object"""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
+        border=4,
     )
-
-    try:
-        # 1. Try to Generate QR Image
-        # We import constants here just to be safe
-        from qrcode import constants
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=4,
-        )
-        upi_link = f"upi://pay?pa={UPI_ID}&pn=URLSourceZIP&am={amount}&cu=INR"
-        qr.add_data(upi_link)
-        qr.make(fit=True)
-        
-        # CRITICAL: This requires PIL (Pillow). 
-        img = qr.make_image(fill_color="black", back_color="white")
-        
-        # If successful, convert to BytesIO
-        bio = BytesIO()
-        img.save(bio, "PNG")
-        bio.seek(0)
-        
-        # Keyboard
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_ss")]
-        ])
-
-        # Send Photo
-        # If it's a callback query, edit the message, else reply new
-        if update.callback_query:
-            await update.callback_query.message.reply_photo(
-                photo=bio,
-                filename="upi_qr.png", 
-                caption=caption_text,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-        else:
-            await update.message.reply_photo(
-                photo=bio,
-                filename="upi_qr.png", 
-                caption=caption_text,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-        
-    except Exception as e:
-        # --- FALLBACK IF QR FAILS (PIL MISSING OR OTHER ERROR) ---
-        print(f"QR Image Error: {e}. Switching to Button Mode.")
-
-        # UPI Link for button
-        upi_link = f"upi://pay?pa={UPI_ID}&pn=URLSourceZIP&am={amount}&cu=INR"
-        
-        # Keyboard with Pay Button
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Pay Now (Open App)", url=upi_link)],
-            [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_ss")]
-        ])
-
-        msg_text = (
-            f"⚠️ **QR Image Generation Failed (Server Limitation)**\n\n"
-            f"{caption_text}\n\n"
-            f"🆔 **UPI ID:** `{UPI_ID}`\n\n"
-            f"👇 **Option:** Click 'Pay Now' button below to open payment app directly.\n"
-            f"📸 After payment, tap 'Send Screenshot'."
-        )
-
-        if update.callback_query:
-            await update.callback_query.message.reply_text(
-                msg_text,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
-        else:
-            await update.message.reply_text(
-                msg_text,
-                parse_mode="Markdown",
-                reply_markup=kb
-            )
+    upi_link = f"upi://pay?pa={UPI_ID}&pn=URLSourceZIP&am={amount}&cu=INR"
+    qr.add_data(upi_link)
+    qr.make(fit=True)
+    
+    # This requires Pillow (PIL)
+    img = qr.make_image(fill_color="black", back_color="white")
+    return img
 
 # ======================= START =======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -498,7 +424,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎁 **Free Plan:** {FREE_DAILY_LIMIT} files/day\n"
         "💎 **Premium:** Unlimited Access\n\n"
         "👇 **Menu:**\n"
-        "/buy - Premium Plans\n"
+        "/buy - Premium kharidein\n"
         "/redeem <code> - Apply Code\n"
         "/status - Apna plan dekhein\n"
         "/support - Help center",
@@ -594,27 +520,100 @@ async def admin_check_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("⚠️ **Use:** `/check <uid>`", parse_mode="Markdown")
 
-# ======================= NEW BUY MENU =======================
-async def buy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Shows Advanced Payment Options"""
+# ======================= BUY (FIXED WITH FALLBACK) =======================
+async def buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     if uid in BANNED_USERS: return
     
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 Standard Plan (₹49)", callback_data="buy_std")],
-        [InlineKeyboardButton("⚡ Flash Sale (₹39)", callback_data="buy_flash")],
-        [InlineKeyboardButton("🔥 Sunday Special (₹29)", callback_data="buy_sunday")]
-    ])
+    current_time = time.time()
+    offer_end_time = OFFER_TIMERS.get(uid, 0)
     
-    await update.message.reply_text(
-        "🛒 **CHOOSE PREMIUM PLAN**\n\n"
-        "Select a plan below to generate QR:\n"
-        "💎 Standard - ₹49\n"
-        "⚡ Flash Sale - ₹39\n"
-        "🔥 Sunday Special - ₹29\n\n"
-        "All plans include **30 Days Validity**.",
-        reply_markup=kb
-    )
+    if is_sunday():
+        amount = SUNDAY_PRICE
+        caption_text = (
+            f"🔥 **SUNDAY SPECIAL OFFER!** 🔥\n"
+            f"💰 **Price: ₹{amount} ONLY** (Huge Discount)\n"
+            f"🚀 **Validity:** 30 Days Premium\n"
+            f"⏳ Sirf aaj ke liye valid!\n\n"
+            "👇 QR Scan karke Screenshot bhejo!"
+        )
+    elif current_time < offer_end_time:
+        amount = OFFER_PRICE
+        minutes_left = int((offer_end_time - current_time) / 60)
+        caption_text = (
+            f"⚡ **FLASH SALE ACTIVE!** ⚡\n"
+            f"💰 **Price: ₹{amount}** (Save 20%)\n"
+            f"⏳ Ends in: {minutes_left} Minutes\n"
+            f"🏷 Code: `{OFFER_CODE}` applied!\n\n"
+            "Jaldi pay karein aur screenshot bhejein!"
+        )
+    else:
+        amount = PREMIUM_PRICE
+        caption_text = (
+            f"💎 **PREMIUM PLAN**\n"
+            f"💰 **Price: ₹{amount}** / Month\n"
+            f"🚀 Unlimited Extracts\n"
+            f"📂 Bulk Access\n\n"
+            "Pay karke screenshot bhejein."
+        )
+
+    # --- SAFETY TRY BLOCK FOR PIL ERROR ---
+    try:
+        # 1. Try to Generate QR Image
+        img = generate_qr_image(amount)
+        
+        # 2. Convert to BytesIO stream
+        bio = BytesIO()
+        img.save(bio, "PNG")
+        bio.seek(0)
+        
+        # 3. Create Keyboard
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_ss")]
+        ])
+
+        # 4. Send Photo
+        await update.message.reply_photo(
+            photo=bio,
+            filename="upi_qr.png", 
+            caption=caption_text,
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
+        
+    except Exception as e:
+        # --- FALLBACK IF PIL MISSING OR CRASH ---
+        error_str = str(e)
+        print(f"QR Error: {e}")
+
+        # If it's a PIL/Image library error, send a BUTTON instead
+        if "PIL" in error_str or "No module named" in error_str:
+            
+            # UPI Link to open GPay/PhonePe
+            upi_link = f"upi://pay?pa={UPI_ID}&pn=URLSourceZIP&am={amount}&cu=INR"
+            
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💳 Pay Now (UPI)", url=upi_link)],
+                [InlineKeyboardButton("📸 Send Screenshot", callback_data="send_ss")]
+            ])
+
+            await update.message.reply_text(
+                f"⚠️ **QR Image Generation Failed (Server Limitation)**\n\n"
+                f"💰 **Pay Amount:** ₹{amount}\n"
+                f"🆔 **UPI ID:** `{UPI_ID}`\n\n"
+                f"👇 **Option:** Click 'Pay Now' button below to open payment app directly.\n"
+                f"📸 After payment, tap 'Send Screenshot'.",
+                parse_mode="Markdown",
+                reply_markup=kb
+            )
+        else:
+            # Other errors
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+async def ask_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.answer()
+    WAITING_SCREENSHOT.add(update.callback_query.from_user.id)
+    await update.message.reply_text("📸 Screenshot bhejo")
 
 # ======================= CALLBACK HANDLER (ONE-CLICK LOGIC) =======================
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -638,14 +637,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "👉 Pehle group join karo,\n"
                 "🌐 Phir URL extract kar paoge 🚀"
             )
-
-    # NEW PAYMENT PLAN HANDLERS
-    elif data == "buy_std":
-        await generate_qr_flow(update, context, PREMIUM_PRICE, "Standard Plan")
-    elif data == "buy_flash":
-        await generate_qr_flow(update, context, OFFER_PRICE, "Flash Sale")
-    elif data == "buy_sunday":
-        await generate_qr_flow(update, context, SUNDAY_PRICE, "Sunday Special")
 
     elif data == "send_ss":
         WAITING_SCREENSHOT.add(q.from_user.id)
@@ -1308,7 +1299,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("admin", admin_dashboard))
     app.add_handler(CommandHandler("status", status))
-    app.add_handler(CommandHandler("buy", buy_menu)) # UPDATED: Points to new menu
+    app.add_handler(CommandHandler("buy", buy))
     app.add_handler(CommandHandler("support", support))
     app.add_handler(CommandHandler("check", admin_check_user))
     app.add_handler(CommandHandler("approve", approve))
